@@ -1236,6 +1236,112 @@ fn test_revoke_certificate() {
 }
 
 #[test]
+fn test_verify_certificate_unknown_id_returns_false() {
+    let (env, contract_id, _token_id, _admin, _sec_admin, _treasury, _instructor) = setup();
+    let client = SorobanLardContractClient::new(&env, &contract_id);
+
+    let unknown_id = String::from_str(&env, "CERT-DOES-NOT-EXIST");
+    assert!(!client.verify_certificate(&unknown_id));
+}
+
+#[test]
+fn test_verify_certificate_valid_non_revoked_returns_true() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = SorobanLardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-VERIFY-001");
+    let cert_id = String::from_str(&env, "CERT-VERIFY-VALID");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-VERIFY-001",
+        500_000_000,
+    );
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence_hash")),
+    );
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Verification Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-VERIFY-001"),
+        &None,
+        &None,
+    );
+
+    assert!(client.verify_certificate(&cert_id));
+}
+
+#[test]
+fn test_verify_certificate_revoked_returns_false() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = SorobanLardContractClient::new(&env, &contract_id);
+
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-VERIFY-REVOKED");
+    let cert_id = String::from_str(&env, "CERT-VERIFY-REVOKED");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-VERIFY-REVOKED",
+        500_000_000,
+    );
+
+    client.enroll(&student, &course_id);
+    client.mark_completed(
+        &admin,
+        &student,
+        &course_id,
+        &Some(String::from_str(&env, "evidence_hash")),
+    );
+    client.issue_certificate(
+        &admin,
+        &student,
+        &course_id,
+        &cert_id,
+        &String::from_str(&env, "Revoked Verification Course"),
+        &get_enrollment_ref(&env, &client, &student, "COURSE-VERIFY-REVOKED"),
+        &None,
+        &None,
+    );
+
+    assert!(client.verify_certificate(&cert_id));
+
+    client.revoke_certificate(
+        &admin,
+        &cert_id,
+        &String::from_str(&env, "ISSUED_IN_ERROR"),
+    );
+
+    // Advance past the challenge period so the revocation is permanent
+    let cert = client.get_certificate(&admin, &cert_id);
+    let deadline = cert.revocation_deadline.unwrap();
+    env.ledger().with_mut(|l| {
+        l.sequence_number = deadline;
+    });
+
+    assert!(!client.verify_certificate(&cert_id));
+}
+
+#[test]
 fn test_event_certificate_revoked() {
     let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
     let client = SorobanLardContractClient::new(&env, &contract_id);
