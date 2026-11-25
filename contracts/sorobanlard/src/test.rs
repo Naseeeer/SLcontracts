@@ -244,6 +244,123 @@ fn test_register_duplicate_course() {
 }
 
 // ============================================================
+// PER-COURSE PLATFORM FEE OVERRIDE TESTS (#361)
+// ============================================================
+
+/// Register a course with an explicit `platform_fee_pct` and approve it.
+fn register_course_with_fee(
+    env: &Env,
+    client: &SorobanLardContractClient,
+    token_id: &Address,
+    admin: &Address,
+    instructor: &Address,
+    course_id: &str,
+    price: i128,
+    platform_fee_pct: u32,
+) {
+    client.register_course(
+        instructor,
+        &String::from_str(env, course_id),
+        &price,
+        token_id,
+        &platform_fee_pct,
+        &None,
+        &BytesN::from_array(env, &[1u8; 32]),
+        &soroban_sdk::Vec::new(env),
+    );
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 1;
+    });
+    client.approve_course(admin, &String::from_str(env, course_id));
+}
+
+#[test]
+fn test_enrollment_uses_per_course_fee_override() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = SorobanLardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-FEE-OVERRIDE");
+    register_course_with_fee(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FEE-OVERRIDE",
+        100_000_000, // 10 USDC
+        30,          // 30% override, above the 20% global default
+    );
+
+    client.enroll(&student, &course_id);
+
+    let enrollment = client.get_enrollment(&student, &student, &course_id).unwrap();
+    // 30% of 10 USDC
+    assert_eq!(enrollment.platform_amount, 30_000_000);
+    assert_eq!(enrollment.instructor_amount, 70_000_000);
+    assert_eq!(
+        client.get_instructor_earnings(&instructor, &token_id),
+        70_000_000
+    );
+}
+
+#[test]
+fn test_enrollment_uses_global_default_fee_without_override() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = SorobanLardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-FEE-DEFAULT");
+    register_and_approve_course(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FEE-DEFAULT",
+        100_000_000, // 10 USDC
+    );
+
+    client.enroll(&student, &course_id);
+
+    let enrollment = client.get_enrollment(&student, &student, &course_id).unwrap();
+    // 20% global default of 10 USDC
+    assert_eq!(enrollment.platform_amount, 20_000_000);
+    assert_eq!(enrollment.instructor_amount, 80_000_000);
+}
+
+#[test]
+fn test_global_default_fee_change_does_not_affect_course_override() {
+    let (env, contract_id, token_id, admin, _sec_admin, _treasury, instructor) = setup();
+    let client = SorobanLardContractClient::new(&env, &contract_id);
+    let student = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_id).mint(&student, &100_000_000_000);
+
+    let course_id = String::from_str(&env, "COURSE-FEE-STABLE");
+    register_course_with_fee(
+        &env,
+        &client,
+        &token_id,
+        &admin,
+        &instructor,
+        "COURSE-FEE-STABLE",
+        100_000_000, // 10 USDC
+        30,          // 30% override captured at registration
+    );
+
+    // Raise the global default after registration; the override must win.
+    client.update_default_fee(&admin, &40u32);
+
+    client.enroll(&student, &course_id);
+
+    let enrollment = client.get_enrollment(&student, &student, &course_id).unwrap();
+    assert_eq!(enrollment.platform_amount, 30_000_000);
+    assert_eq!(enrollment.instructor_amount, 70_000_000);
+}
+
+// ============================================================
 // COURSE APPROVAL TESTS
 // ============================================================
 
